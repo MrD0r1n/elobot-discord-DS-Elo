@@ -4,6 +4,6 @@ While it duable to implement a copy of this bot, note you have to tweak some thi
 
 
 ## STILL TRYING? ##
-Download the required pip packages and make sure to place a .env file in the project folder. The env file should specify;
+Download the required pip packages and make sure to create .env file in the project folder. The env file should specify;
 DISCORD_API_TOKEN = "your-token"
 GUILD = "your-guild-id" 
