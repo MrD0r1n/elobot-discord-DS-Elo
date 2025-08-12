@@ -200,7 +200,7 @@ class PaginatorCog(commands.Cog):
         app_commands.Choice(name="Other", value="other")
     ])
     @app_commands.describe(months="Filter by last X months (optional, only for Leaderboard)")
-    async def paginate(self, interaction:discord.Interaction, choices: app_commands.Choice[str], private:bool=True, months:int=1):
+    async def paginate(self, interaction:discord.Interaction, choices: app_commands.Choice[str], private:bool=True, months:int=0):
         try:
             # Create a connection to the SQLite database
             with sqlite3.connect('elo_data.db') as conn:
@@ -318,3 +318,4 @@ class PaginatorCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(PaginatorCog(bot))
+
