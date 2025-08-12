@@ -220,7 +220,7 @@ class LeaderboardView(discord.ui.View):
 
             if self.filter_mode == "months":
                 if self.filter_data > 0:
-                    cutoff_date = datetime.datetime.utcnow() - datetime.timedelta(days=1 * self.filter_data)
+                    cutoff_date = datetime.datetime.utcnow() - datetime.timedelta(days=30 * self.filter_data)
                     cutoff_str = cutoff_date.strftime('%Y-%m-%d %H:%M:%S')
                     query = """
                         SELECT DISTINCT e.player_id, e.elo
@@ -398,6 +398,7 @@ async def set_leaderbord(interaction, channel: discord.TextChannel, filter_type:
 
     view = LeaderboardView(interaction, filter_mode=filter_mode, filter_data=filter_data) 
     data = await view.get_leaderboard_data(interaction, limit=10)
+    data_for_mentions = await view.get_leaderboard_data(interaction, limit=1000)
 
     if not data:
         await interaction.followup.send(f"No matches found for `{filter_type.value}` ({filter_value}).")
@@ -407,7 +408,7 @@ async def set_leaderbord(interaction, channel: discord.TextChannel, filter_type:
 
     # Extract player IDs from data (assuming format: `rank) <@ID> (ELO) ...`)
     player_mentions = []
-    for entry in data:
+    for entry in data_for_mentions:
         if "<@" in entry:  # Check if the entry contains a mention
             player_id = entry.split("<@")[1].split(">")[0]  # Extract ID
             player_mentions.append(f"<@{player_id}>")
@@ -426,3 +427,4 @@ async def set_leaderbord(interaction, channel: discord.TextChannel, filter_type:
 async def setup(bot):
     bot.tree.add_command(set_leaderbord)
     return
+
