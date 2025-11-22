@@ -6,17 +6,24 @@ import datetime
 import asyncio
 from cogs.backup import backup_db
 
-# role declaration for auto role assignment (these are custom roles for doom sumo discord)
 
-#brawler = 1038774212413882438
-#contender = 1040152291694624818
-#temporary roles test server
-brawler = 1342658595069759558
-contender = 1342858568713375784
-
-perm = 1083774024884166777
-# higher up roles including baller
+# higher up roles including baller (these are custom roles for doom sumo discord)
 roles = {1038774212413882438 ,1040336000859246604, 1038774518128328725, 1038774679223160863, 1040724697286979585, 1038775020673056778}
+perm = 1441503706628751564 # test role
+# what are all the roles in this file?
+'''
+1038774212413882438 - Baller
+1040336000859246604 - Aprentice
+1038774518128328725 - Noble
+1038774679223160863 - Heroic
+1040724697286979585 - Emperor
+1038775020673056778 - Eternal
+
+876209678462382090 - Lead perms
+828304201586442250 - Mod
+775177858237857802 - Admin
+'''
+
 
 # Create a connection to the SQLite database
 # If the database doesn't exist, it will be created
@@ -205,23 +212,34 @@ async def report(interaction: discord.Interaction, winner: discord.Member, loser
         pass
     else:
         guild = interaction.guild
-        brawler_obj = guild.get_role(brawler)
-        await interaction.followup.send(f"{winner.name} earned the brawler role!")
-        await winner.add_roles(brawler_obj)
+        brawler_obj = guild.get_role(1038774212413882438)
+        #await interaction.followup.send(f"{winner.name} earned the Baller role!")
+        #await winner.add_roles(brawler_obj)
+       
+        # Give the player the 'contender' role
+        contender_obj = guild.get_role(1040152291694624818)
+        contender_role = 1040152291694624818
+        if any(role.id == contender_role for role in winner.roles):
+            await interaction.followup.send(f"{winner.name} earned the Baller role!")
+            await winner.add_roles(brawler_obj)
+        else:
+            await interaction.followup.send(f"{winner.name} earned the Challenger and Baller role!")
+            await winner.add_roles(contender_obj)
+            await winner.add_roles(brawler_obj)
 
     # check roles for loser
     if any(role.id in roles for role in loser.roles):
         pass
     else:
         guild = interaction.guild
-        contender_obj = guild.get_role(contender)
-        contender_role = 1146447351217672323
+        contender_obj = guild.get_role(1040152291694624818)
+        contender_role = 1040152291694624818
         # if already has role contender
         if any(role.id == contender_role for role in loser.roles):
             pass
         # Give the player the 'contender' role
         else:
-            await interaction.followup.send(f"{loser.name} earned the contender role!")
+            await interaction.followup.send(f"{loser.name} earned the Challenger role!")
             await loser.add_roles(contender_obj)
 
     # Update the ELO scores
