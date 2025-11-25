@@ -18,5 +18,6 @@ Bot permissions: View Channels, Manage Roles, Send messages, Add Reactions, Read
 DISCORD_API_TOKEN = "your-token"
 
 GUILD = "your-guild-id"
+CHALLONGE_API_TOKEN "your-challongev1-token" (needed, if you want to use challonge functions)
 
 -To start: 'python main.py'
