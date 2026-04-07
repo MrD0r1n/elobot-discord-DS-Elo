@@ -1,4 +1,4 @@
-﻿import datetime
+import datetime
 import os
 import re
 import sqlite3
@@ -446,7 +446,7 @@ class ChallongeCommands(commands.Cog):
         except Exception:
             pass
 
-        # Build a nice embed summary in English, including per‑match lines if available
+        # Build an embed summary
         summary_lines = [
             f"Processed: {processed}",
             f"Registered new players: {newly_registered}",
@@ -489,6 +489,109 @@ class ChallongeCommands(commands.Cog):
                 embed.set_footer(text="List truncated for length. Consider importing in smaller batches if needed.")
 
         await interaction.followup.send(embed=embed)
+
+
+    @app_commands.command(
+        name="challonge_substitute",
+        description="Substitutes a participant in a Challonge tournament"
+    )
+    @app_commands.describe(
+        tournament_id="Challonge tournament ID or URL slug",
+        existing_player="The existing participant to replace (pick a Discord user)",
+        new_player="The new participant (pick a Discord user)"
+    )
+    async def challonge_substitute(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        existing_player: discord.User,
+        new_player: discord.User,
+    ):
+        """Updates an existing Challonge participant by selecting Discord users.
+        Notes:
+        - Finds the participant via misc (Discord ID) of the existing Discord user.
+        - Updates the participant's display name to the new Discord user's display name.
+        - Updates misc to the new Discord user's ID.
+        """
+        await interaction.response.defer(thinking=True)
+
+        # Basic requirements
+        if not CHALLONGE_API_KEY:
+            await interaction.followup.send("❌ CHALLONGE_API_TOKEN is not set.")
+            return
+
+        try:
+            # Load all participants for the tournament
+            participants_wrapped = await self.get_participants(tournament_id)
+
+            # Flatten to a list of raw participant dicts
+            plist = [pw.get("participant", {}) for pw in participants_wrapped]
+
+            # Primary lookup: misc stores Discord user ID
+            target = None
+            for p in plist:
+                misc_val = p.get("misc")
+                if misc_val is not None and str(misc_val) == str(existing_player.id):
+                    target = p
+                    break
+
+            # Fallback: exact case-insensitive name match against the existing Discord display name
+            if target is None:
+                # Safely resolve a display name for the existing user
+                disp = getattr(existing_player, 'display_name', None) or getattr(existing_player, 'global_name', None) or existing_player.name
+                for p in plist:
+                    name = str(p.get("name", ""))
+                    if name.lower() == disp.lower():
+                        target = p
+                        break
+
+            if target is None:
+                await interaction.followup.send(
+                    "❌ Could not find a participant linked to the selected existing Discord user. Make sure their Discord ID is stored in Challonge 'misc'."
+                )
+                return
+
+            target_id = target.get("id")
+            old_name = target.get("name")
+            old_misc = target.get("misc")
+            if not target_id:
+                await interaction.followup.send("❌ Found a participant without a valid ID; cannot update.")
+                return
+
+            # Perform the update using Challonge v1 API
+            # Safely resolve a display name for the new user
+            new_disp = getattr(new_player, 'display_name', None) or getattr(new_player, 'global_name', None) or new_player.name
+            form = {
+                "participant[name]": new_disp,
+                "participant[misc]": str(new_player.id),
+            }
+
+            updated = await self.challonge_request(
+                "PUT",
+                f"tournaments/{tournament_id}/participants/{int(target_id)}.json",
+                data=form,
+            )
+
+            updated_p = updated.get("participant", {}) if isinstance(updated, dict) else {}
+            new_name = updated_p.get("name", new_disp)
+            new_misc = updated_p.get("misc", str(new_player.id))
+
+            embed = discord.Embed(
+                title="🔁 Participant Substitution Completed",
+                description="The participant has been updated on Challonge (name and misc).",
+                color=discord.Color.green(),
+            )
+            embed.add_field(name="Tournament", value=str(tournament_id), inline=False)
+            embed.add_field(name="Old Name", value=str(old_name), inline=True)
+            embed.add_field(name="New Name", value=str(new_name), inline=True)
+            embed.add_field(name="Old misc (Discord ID)", value=str(old_misc) if old_misc is not None else "None", inline=False)
+            embed.add_field(name="New misc (Discord ID)", value=str(new_misc), inline=False)
+            embed.set_footer(text="Both the display name and misc (Discord ID) were updated using the selected Discord users.")
+
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Error performing substitution: {e}")
 
 
 async def setup(bot):
