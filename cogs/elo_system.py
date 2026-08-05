@@ -4,25 +4,12 @@ from discord import app_commands
 import math
 import datetime
 import asyncio
+import settings
 from cogs.backup import backup_db
 
 
-# higher up roles including baller (these are custom roles for doom sumo discord)
-roles = {1038774212413882438 ,1040336000859246604, 1038774518128328725, 1038774679223160863, 1040724697286979585, 1038775020673056778}
-perm = 1441503706628751564 # test role
-# what are all the roles in this file?
-'''
-1038774212413882438 - Baller
-1040336000859246604 - Aprentice
-1038774518128328725 - Noble
-1038774679223160863 - Heroic
-1040724697286979585 - Emperor
-1038775020673056778 - Eternal
-
-876209678462382090 - Lead perms
-828304201586442250 - Mod
-775177858237857802 - Admin
-'''
+# Role IDs live in settings.py now - see settings.RANK_ROLES / settings.STAFF_ROLES.
+roles = settings.RANK_ROLES
 
 
 # Create a connection to the SQLite database
@@ -163,6 +150,58 @@ def update_historical_rankings():
         conn.commit()
 
 # Other functions
+async def grant_winner_rank_roles(member: discord.Member, extra_role_ids: frozenset = frozenset()):
+    """Grants the Challenger/Baller roles to a match winner.
+
+    `extra_role_ids` lets a caller processing many matches in one batch (e.g. Challonge import) tell
+    us about roles it already granted this same member earlier in the batch - member.roles won't
+    reflect those yet since add_roles() doesn't update discord.py's local cache.
+
+    Returns (messages, granted_role_ids): status messages (earned-role announcements or missing-role
+    warnings) without sending them, so callers can present them however they like (/report sends them
+    immediately, Challonge import batches them into a summary); and the set of role IDs actually
+    granted, for the caller to fold into extra_role_ids on the next call for this member."""
+    known_role_ids = {role.id for role in member.roles} | extra_role_ids
+    if known_role_ids & roles:
+        return [], set()
+
+    guild = member.guild
+    brawler_obj = guild.get_role(settings.ROLE_BALLER)
+    contender_obj = guild.get_role(settings.ROLE_CONTENDER)
+    contender_role = settings.ROLE_CONTENDER
+
+    if contender_role in known_role_ids:
+        if brawler_obj is None:
+            return [f":warning:  Couldn't find the Baller role in this server (check the role ID) — skipping role assignment for {member.name}."], set()
+        await member.add_roles(brawler_obj)
+        return [f"{member.name} earned the Baller role!"], {brawler_obj.id}
+
+    if contender_obj is None or brawler_obj is None:
+        missing = [name for name, obj in (("Challenger", contender_obj), ("Baller", brawler_obj)) if obj is None]
+        return [f":warning:  Couldn't find the {' / '.join(missing)} role(s) in this server (check the role ID{'s' if len(missing) > 1 else ''}) — skipping role assignment for {member.name}."], set()
+    await member.add_roles(contender_obj)
+    await member.add_roles(brawler_obj)
+    return [f"{member.name} earned the Challenger and Baller role!"], {contender_obj.id, brawler_obj.id}
+
+
+async def grant_loser_rank_roles(member: discord.Member, extra_role_ids: frozenset = frozenset()):
+    """Grants the Challenger role to a match loser if they don't already have a rank role.
+    See grant_winner_rank_roles for extra_role_ids and the (messages, granted_role_ids) return shape."""
+    known_role_ids = {role.id for role in member.roles} | extra_role_ids
+    if known_role_ids & roles:
+        return [], set()
+
+    contender_role = settings.ROLE_CONTENDER
+    if contender_role in known_role_ids:
+        return [], set()
+
+    contender_obj = member.guild.get_role(contender_role)
+    if contender_obj is None:
+        return [f":warning:  Couldn't find the Challenger role in this server (check the role ID) — skipping role assignment for {member.name}."], set()
+    await member.add_roles(contender_obj)
+    return [f"{member.name} earned the Challenger role!"], {contender_obj.id}
+
+
 def create_embed(description):
     """Create the embed for the current page."""
     embed = discord.Embed(
@@ -175,7 +214,7 @@ def create_embed(description):
 
 # Commands
 @app_commands.command(name = "register", description = "Register a player")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802, 795415130325254154)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def register(interaction, player: discord.Member):
     if get_elo(player.id) is None:
             set_elo(player.id, 1200)
@@ -184,7 +223,7 @@ async def register(interaction, player: discord.Member):
         await interaction.response.send_message(f"{player.mention} is already registered")
 
 @app_commands.command(name = "report", description = "Report a match")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802, 795415130325254154)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def report(interaction: discord.Interaction, winner: discord.Member, loser: discord.Member):
     if winner.id == loser.id:
         await interaction.response.send_message(":face_with_monocle:  Winner and loser can't be the same person.")
@@ -207,40 +246,13 @@ async def report(interaction: discord.Interaction, winner: discord.Member, loser
     if new_players: 
         await interaction.followup.send("\n".join(new_players))
 
-    # check roles for winner
-    if any(role.id in roles for role in winner.roles):
-        pass
-    else:
-        guild = interaction.guild
-        brawler_obj = guild.get_role(1038774212413882438)
-        #await interaction.followup.send(f"{winner.name} earned the Baller role!")
-        #await winner.add_roles(brawler_obj)
-       
-        # Give the player the 'contender' role
-        contender_obj = guild.get_role(1040152291694624818)
-        contender_role = 1040152291694624818
-        if any(role.id == contender_role for role in winner.roles):
-            await interaction.followup.send(f"{winner.name} earned the Baller role!")
-            await winner.add_roles(brawler_obj)
-        else:
-            await interaction.followup.send(f"{winner.name} earned the Challenger and Baller role!")
-            await winner.add_roles(contender_obj)
-            await winner.add_roles(brawler_obj)
-
-    # check roles for loser
-    if any(role.id in roles for role in loser.roles):
-        pass
-    else:
-        guild = interaction.guild
-        contender_obj = guild.get_role(1040152291694624818)
-        contender_role = 1040152291694624818
-        # if already has role contender
-        if any(role.id == contender_role for role in loser.roles):
-            pass
-        # Give the player the 'contender' role
-        else:
-            await interaction.followup.send(f"{loser.name} earned the Challenger role!")
-            await loser.add_roles(contender_obj)
+    # Grant rank roles based on standing (Challenger/Baller for the winner, Challenger for the loser)
+    winner_role_msgs, _ = await grant_winner_rank_roles(winner)
+    for msg in winner_role_msgs:
+        await interaction.followup.send(msg)
+    loser_role_msgs, _ = await grant_loser_rank_roles(loser)
+    for msg in loser_role_msgs:
+        await interaction.followup.send(msg)
 
     # Update the ELO scores
     #date = datetime.date.today().isoformat()  # get the current date in 'YYYY-MM-DD' format
@@ -285,7 +297,7 @@ async def report(interaction: discord.Interaction, winner: discord.Member, loser
     await interaction.followup.send(embed=create_embed(description))
 
 @app_commands.command(name = "set_elo", description = "Sets the elo of a player")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802, 795415130325254154)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def change_elo(interaction, player: discord.Member, elo: int):
     if get_elo(player.id) is None:
         await interaction.response.send_message(f"{player.mention} is not registered.")
@@ -327,7 +339,7 @@ async def game(interaction: discord.Interaction, game_id: int):
             await interaction.response.send_message(f"Game ID: {game_id}\nDate: {date}\nWinner: {winner.name} ({elo_winner - elo_change * multiplier}  > {elo_winner}) +{elo_change * multiplier}\nLoser: {loser.name} ({elo_loser + elo_change}  > {elo_loser}) -{elo_change}")
 
 @app_commands.command(name = "remove_game", description = "Remove a game and undo ELO changes")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802, 795415130325254154)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def remove_game(interaction, game_id: int):
     # Fetch the game details
     with sqlite3.connect('elo_data.db') as conn:
@@ -354,7 +366,7 @@ async def remove_game(interaction, game_id: int):
             await interaction.response.send_message(f"Game {game_id} removed and ELO changes undone.\n{winner.name}'s ELO is now: {get_elo(winner_id)} ({get_elo(winner_id) + elo_change * multiplier}-{elo_change * multiplier})\n{loser.name}'s ELO is now: {get_elo(loser_id)} ({get_elo(loser_id) - elo_change}+{elo_change})")
 
 @app_commands.command(name="toggle_elo_multiplier", description="Toggle the ELO multiplier")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802, 795415130325254154)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def toggle_elo_multiplier(interaction):
     with sqlite3.connect('elo_data.db') as conn:
         c = conn.cursor()
@@ -368,7 +380,7 @@ async def toggle_elo_multiplier(interaction):
         conn.commit()
 
 @app_commands.command(name='set_inactive', description='Mark a player as inactive')
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def set_inactive(interaction, player_id: str):
     with sqlite3.connect('elo_data.db') as conn:
         c = conn.cursor()
@@ -378,7 +390,7 @@ async def set_inactive(interaction, player_id: str):
         await interaction.response.send_message(f"Player with ID {player_id} has been set to inactive :man_detective:")
 
 @app_commands.command(name='set_active', description='Mark a player as active')
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def set_active(interaction, player_id: str):
     with sqlite3.connect('elo_data.db') as conn:
         c = conn.cursor()
@@ -393,7 +405,7 @@ async def get_player_id(interaction, member: discord.Member):
     await interaction.response.send_message(f"The player ID for {member.name} is {member.id}.")
 
 @app_commands.command(name="list_inactive", description="Lists all inactive players")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def list_inactive(interaction: discord.Interaction):
     """Lists all players marked as inactive in the database."""
     with sqlite3.connect('elo_data.db') as conn:
@@ -442,7 +454,7 @@ async def clean_commands(interaction: discord.Interaction):
     await interaction.response.send_message("✅ Global commands cleared and guild commands re-synced.", ephemeral=True)
 
 @app_commands.command(name="reset_all_elo", description="Reset everyone's ELO to 1200 (dangerous)")
-@discord.app_commands.checks.has_any_role(perm, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def reset_all_elo(interaction: discord.Interaction):
     warning = (
         "⚠️ **This will reset ALL players' ELO to 1200.**\n"

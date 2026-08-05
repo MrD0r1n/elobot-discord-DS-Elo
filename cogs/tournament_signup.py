@@ -4,10 +4,7 @@ from discord import app_commands
 import datetime
 from io import BytesIO
 import asyncio
-
-
-# All role descriptions found in elo_system.py. example: '775177858237857802 - Admin'
-perm = 1441503706628751564 # test role
+import settings
 
 # Create database table for tournament signups
 with sqlite3.connect('elo_data.db') as conn:
@@ -213,7 +210,7 @@ class TournamentSignupView(discord.ui.View):
 
 # Commands
 @app_commands.command(name="create_tournament_signup", description="Create a tournament signup message")
-@discord.app_commands.checks.has_any_role(perm, 1441503706628751564, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 @app_commands.describe(
     tournament_name="Name of the tournament",
     close_after_hours="Automatically close signups after X hours (optional)"
@@ -293,7 +290,7 @@ async def schedule_signup_close(bot, channel_id, message_id, tournament_name, ho
         print(f"Error auto-closing tournament signups: {e}")
 
 @app_commands.command(name="close_tournament_signup", description="Close tournament signups")
-@discord.app_commands.checks.has_any_role(perm, 1441503706628751564, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 @app_commands.describe(message_id="The message ID of the tournament signup")
 async def close_tournament_signup(interaction: discord.Interaction, message_id: str):
     """Close tournament signups for a specific message"""
@@ -364,7 +361,7 @@ async def close_tournament_signup(interaction: discord.Interaction, message_id: 
     await interaction.response.send_message(f"✅ Tournament signups for message ID `{message_id}` have been closed!")
 
 @app_commands.command(name="reopen_tournament_signup", description="Reopen tournament signups")
-@discord.app_commands.checks.has_any_role(perm, 1441503706628751564, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 @app_commands.describe(message_id="The message ID of the tournament signup")
 async def reopen_tournament_signup(interaction: discord.Interaction, message_id: str):
     """Reopen tournament signups for a specific message"""
@@ -435,7 +432,7 @@ async def reopen_tournament_signup(interaction: discord.Interaction, message_id:
     await interaction.response.send_message(f"✅ Tournament signups for message ID `{message_id}` have been reopened!")
 
 @app_commands.command(name="list_tournament_signups", description="List all users signed up for a tournament")
-@discord.app_commands.checks.has_any_role(perm, 1441503706628751564, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def list_tournament_signups(interaction: discord.Interaction, message_id: str = None, tournament_name: str = None):
     """List all signups for a specific tournament message or tournament name"""
     
@@ -500,7 +497,7 @@ async def list_tournament_signups(interaction: discord.Interaction, message_id: 
     await interaction.response.send_message(embed=embed)
 
 @app_commands.command(name="clear_tournament_signups", description="Clear all signups for a tournament")
-@discord.app_commands.checks.has_any_role(perm, 1441503706628751564, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def clear_tournament_signups(interaction: discord.Interaction, message_id: str = None, tournament_name: str = None):
     """Clear signups for a specific message or tournament"""
     
@@ -581,7 +578,7 @@ async def clear_tournament_signups(interaction: discord.Interaction, message_id:
     )
 
 @app_commands.command(name="export_tournament_signups", description="Export tournament signups as a text file")
-@discord.app_commands.checks.has_any_role(perm, 1441503706628751564, 876209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def export_tournament_signups(interaction: discord.Interaction, tournament_name: str):
     """Export signups to a text file"""
     

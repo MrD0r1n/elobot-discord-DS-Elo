@@ -32,7 +32,10 @@ def run():
         for cog_file in settings.COGS_DIR.glob("*.py"):
             if cog_file.name != "__init__.py":
                 print(f"Loading cog: {cog_file}")
-                await bot.load_extension(f"cogs.{cog_file.name[:-3]}")
+                try:
+                    await bot.load_extension(f"cogs.{cog_file.name[:-3]}")
+                except Exception:
+                    logger.exception(f"Failed to load cog: {cog_file.name}")
 
         for cmd_file in settings.CMDS_DIR.glob("*.py"):
             if cmd_file.name != "__init__.py":
@@ -66,7 +69,9 @@ def run():
     #async def ciao(interaction: discord.Interaction):
         #await interaction.response.send_message(f"Ciao! {interaction.user.mention}", ephemeral=True)
 
-    bot.run(settings.DISCORD_API_SECRET, root_logger=True)
+    # log_handler=None: settings.py already configures logging via dictConfig,
+    # this stops discord.py from also attaching its own default handler.
+    bot.run(settings.DISCORD_API_SECRET, log_handler=None)
 
 if __name__ == '__main__':
     run()

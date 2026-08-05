@@ -51,13 +51,13 @@ class BackupCog(commands.Cog):
         backup_db()
 
     @commands.hybrid_command(name='backup', description='Make a backup of the database')
-    @commands.has_any_role(828304201586442250, 775177858237857802)
+    @commands.has_any_role(*settings.BACKUP_ROLES)
     async def backup(self, ctx, custom_name: str):
         backup_db(custom_name, folder='backups_manual')
         await ctx.send(f"Backup made with the name `{custom_name}`.")
 
     @commands.hybrid_command(name='remove_backup', description='Remove a backup from the server')
-    @commands.has_any_role(828304201586442250, 775177858237857802)
+    @commands.has_any_role(*settings.BACKUP_ROLES)
     async def remove_backup(self, ctx, custom_name: str):
         if remove_backup(custom_name):
             await ctx.send(f"Backup `{custom_name}` has been removed.")

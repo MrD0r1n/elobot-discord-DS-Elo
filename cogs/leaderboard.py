@@ -6,7 +6,6 @@ from cogs.paginator import PaginationView
 import datetime
 from collections import defaultdict
 
-leaderboard_channel = settings.LEADERBOARD_CHANNEL_ID
 logger = settings.logging.getLogger("bot")
 
 
@@ -382,7 +381,7 @@ async def send_leaderboard_mentions(channel, player_mentions):
     app_commands.Choice(name="Months", value="months"),
     app_commands.Choice(name="Game ID", value="gameid")
 ])
-@discord.app_commands.checks.has_any_role(settings.PERMS, 76209678462382090, 828304201586442250, 775177858237857802)
+@discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 async def set_leaderbord(interaction, channel: discord.TextChannel, filter_type: app_commands.Choice[str], filter_value: int):
     """Set up the leaderboard channel with either a months filter or game ID filter."""
     await interaction.response.defer()
