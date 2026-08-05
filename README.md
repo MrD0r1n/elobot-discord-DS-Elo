@@ -34,7 +34,7 @@ You'll need to tweak a few things to make it work on your own server - instructi
    CHALLONGE_COMMUNITY="your-community-permalink"  # optional, e.g. "doomsumo" - creates tournaments under a Challonge community instead of your personal account
    ```
 
-5. **Configure role IDs.** All Discord role IDs the bot checks against (staff permissions, ELO rank roles) live in `settings.py`, not hardcoded in the cogs. Each one can be overridden per-environment via `.env` instead of editing code - handy when testing against a separate server, since you only need to override the roles that differ there. See the `ROLE_*` variables in `settings.py` for the full list and their `.env` override names (e.g. `ROLE_ADMIN`, `ROLE_TEST_PERM`).
+5. **Configure role IDs.** All Discord role IDs the bot checks against (staff permissions, ELO rank roles) live in `settings.py`. Each one can be overridden per-environment via `.env` or by editing the code. See the `ROLE_*` variables in `settings.py` for the full list and their `.env` override names (e.g. `ROLE_ADMIN`, `ROLE_TEST_PERM`).
 
 6. **Start the bot:**
 
