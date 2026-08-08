@@ -122,10 +122,24 @@ class TournamentSignupView(discord.ui.View):
             conn.commit()
 
         await interaction.response.send_message(
-            f"{interaction.user.mention} successfully signed up for **{self.tournament_name}**! ✅", 
+            f"{interaction.user.mention} successfully signed up for **{self.tournament_name}**! ✅",
             ephemeral=True
         )
-        
+
+        # Grant the Tournament Contender role (marks them as playing in this tournament,
+        # used to gate access to tournament-only channels) - separate from the Challenger
+        # rank role, which is only earned through match results.
+        if interaction.guild is not None and isinstance(interaction.user, discord.Member):
+            tournament_contender_role = interaction.guild.get_role(settings.ROLE_TOURNAMENT_CONTENDER)
+            if tournament_contender_role is None:
+                await interaction.followup.send(
+                    ":warning:  Couldn't find the Tournament Contender role in this server "
+                    "(check ROLE_TOURNAMENT_CONTENDER in settings.py/.env) — skipping role assignment.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.user.add_roles(tournament_contender_role)
+
         # Update the signup count in the embed
         await self.update_signup_count(interaction)
 
@@ -164,10 +178,16 @@ class TournamentSignupView(discord.ui.View):
             conn.commit()
 
         await interaction.response.send_message(
-            f"{interaction.user.mention} successfully signed out from **{self.tournament_name}**! ❌", 
+            f"{interaction.user.mention} successfully signed out from **{self.tournament_name}**! ❌",
             ephemeral=True
         )
-        
+
+        # Remove the Tournament Contender role granted on signup
+        if interaction.guild is not None and isinstance(interaction.user, discord.Member):
+            tournament_contender_role = interaction.guild.get_role(settings.ROLE_TOURNAMENT_CONTENDER)
+            if tournament_contender_role is not None:
+                await interaction.user.remove_roles(tournament_contender_role)
+
         # Update the signup count in the embed
         await self.update_signup_count(interaction)
 
@@ -213,16 +233,40 @@ class TournamentSignupView(discord.ui.View):
 @discord.app_commands.checks.has_any_role(*settings.STAFF_ROLES)
 @app_commands.describe(
     tournament_name="Name of the tournament",
-    close_after_hours="Automatically close signups after X hours (optional)"
+    close_after_hours="Automatically close signups after X hours (optional)",
+    recover_message_id="If an old signup message stopped working (e.g. after a bot restart), "
+                        "paste its message ID & name here to migrate those signups onto this fresh message (optional)"
 )
-async def create_tournament_signup(interaction: discord.Interaction, tournament_name: str, close_after_hours: int = None):
+async def create_tournament_signup(
+    interaction: discord.Interaction,
+    tournament_name: str,
+    close_after_hours: int = None,
+    recover_message_id: str = None,
+):
     """Create an embedded message for tournament signups with a button"""
-    
+
+    # If recovering, count what's already signed up under the old (now-dead-button) message
+    recovered_count = 0
+    old_message_id_int = None
+    if recover_message_id:
+        try:
+            old_message_id_int = int(recover_message_id)
+        except ValueError:
+            await interaction.response.send_message("❌ recover_message_id must be a number.", ephemeral=True)
+            return
+        with sqlite3.connect('elo_data.db') as conn:
+            c = conn.cursor()
+            c.execute(
+                'SELECT COUNT(*) FROM tournament_signups WHERE message_id = ? AND tournament_name = ?',
+                (old_message_id_int, tournament_name)
+            )
+            recovered_count = c.fetchone()[0]
+
     embed = discord.Embed(
         title=f"🏆 {tournament_name} - Sign Up",
         description=(
             "Click the buttons below to manage your tournament registration!\n\n"
-            "**Status:** 🟢 **OPEN** - **Total Signups: 0**\n\n"
+            f"**Status:** 🟢 **OPEN** - **Total Signups: {recovered_count}**\n\n"
             "**Info:**\n"
             "• Receive the tournament contender role on sing up\n"
             "• Tournament details will be announced in #info-and-date"
@@ -230,19 +274,34 @@ async def create_tournament_signup(interaction: discord.Interaction, tournament_
         color=discord.Color.green(),
         timestamp=datetime.datetime.now()
     )
-    
+
     if close_after_hours:
         close_time = datetime.datetime.now() + datetime.timedelta(hours=close_after_hours)
         embed.description += f"\n\n⏰ **Signups will automatically close:** {close_time.strftime('%Y-%m-%d %H:%M:%S')}"
-    
+
     embed.set_footer(text="Tournament Signups")
-    
+
     view = TournamentSignupView(tournament_name=tournament_name)
-    
+
     # Send the message and get the actual message object
     await interaction.response.send_message(embed=embed, view=view)
     message = await interaction.original_response()
-    
+
+    # Migrate recovered signups onto the new message
+    if old_message_id_int is not None and recovered_count > 0:
+        with sqlite3.connect('elo_data.db') as conn:
+            c = conn.cursor()
+            c.execute(
+                'UPDATE tournament_signups SET message_id = ? WHERE message_id = ? AND tournament_name = ?',
+                (message.id, old_message_id_int, tournament_name)
+            )
+            conn.commit()
+
+        await interaction.followup.send(
+            f"✅ Recovered {recovered_count} signup(s) from message ID `{old_message_id_int}` onto this new message.",
+            ephemeral=True
+        )
+
     # Schedule automatic closing if timer is set
     if close_after_hours:
         await schedule_signup_close(interaction.client, interaction.channel_id, message.id, tournament_name, close_after_hours)
@@ -561,20 +620,39 @@ async def clear_tournament_signups(interaction: discord.Interaction, message_id:
         await interaction.followup.send("⏳ Timed out. No signups were deleted.")
         return
 
-    # If confirmed: delete the signups
+    # If confirmed: delete the signups, and grab who was signed up first so their
+    # Tournament Contender role can be removed below
     with sqlite3.connect('elo_data.db') as conn:
         c = conn.cursor()
-        
+
+        if message_id:
+            c.execute('SELECT DISTINCT user_id FROM tournament_signups WHERE message_id = ?', (int(message_id),))
+        else:
+            c.execute('SELECT DISTINCT user_id FROM tournament_signups WHERE tournament_name = ?', (tournament_name,))
+        signed_up_user_ids = [row[0] for row in c.fetchall()]
+
         if message_id:
             c.execute('DELETE FROM tournament_signups WHERE message_id = ?', (int(message_id),))
         else:
             c.execute('DELETE FROM tournament_signups WHERE tournament_name = ?', (tournament_name,))
-        
+
         deleted_count = c.rowcount
         conn.commit()
 
+    # Remove the Tournament Contender role from everyone who was signed up
+    roles_removed = 0
+    guild = interaction.guild
+    tournament_contender_role = guild.get_role(settings.ROLE_TOURNAMENT_CONTENDER) if guild else None
+    if guild is not None and tournament_contender_role is not None:
+        for user_id in signed_up_user_ids:
+            member = guild.get_member(user_id)
+            if member is not None and tournament_contender_role in member.roles:
+                await member.remove_roles(tournament_contender_role)
+                roles_removed += 1
+
     await interaction.followup.send(
         f"🗑️ Successfully deleted {deleted_count} signup(s) for {action}."
+        + (f"\nRemoved the Tournament Contender role from {roles_removed} player(s)." if roles_removed else "")
     )
 
 @app_commands.command(name="export_tournament_signups", description="Export tournament signups as a text file")

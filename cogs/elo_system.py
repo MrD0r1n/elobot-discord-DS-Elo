@@ -167,21 +167,21 @@ async def grant_winner_rank_roles(member: discord.Member, extra_role_ids: frozen
 
     guild = member.guild
     brawler_obj = guild.get_role(settings.ROLE_BALLER)
-    contender_obj = guild.get_role(settings.ROLE_CONTENDER)
-    contender_role = settings.ROLE_CONTENDER
+    challenger_obj = guild.get_role(settings.ROLE_CHALLENGER)
+    challenger_role = settings.ROLE_CHALLENGER
 
-    if contender_role in known_role_ids:
+    if challenger_role in known_role_ids:
         if brawler_obj is None:
             return [f":warning:  Couldn't find the Baller role in this server (check the role ID) — skipping role assignment for {member.name}."], set()
         await member.add_roles(brawler_obj)
         return [f"{member.name} earned the Baller role!"], {brawler_obj.id}
 
-    if contender_obj is None or brawler_obj is None:
-        missing = [name for name, obj in (("Challenger", contender_obj), ("Baller", brawler_obj)) if obj is None]
+    if challenger_obj is None or brawler_obj is None:
+        missing = [name for name, obj in (("Challenger", challenger_obj), ("Baller", brawler_obj)) if obj is None]
         return [f":warning:  Couldn't find the {' / '.join(missing)} role(s) in this server (check the role ID{'s' if len(missing) > 1 else ''}) — skipping role assignment for {member.name}."], set()
-    await member.add_roles(contender_obj)
+    await member.add_roles(challenger_obj)
     await member.add_roles(brawler_obj)
-    return [f"{member.name} earned the Challenger and Baller role!"], {contender_obj.id, brawler_obj.id}
+    return [f"{member.name} earned the Challenger and Baller role!"], {challenger_obj.id, brawler_obj.id}
 
 
 async def grant_loser_rank_roles(member: discord.Member, extra_role_ids: frozenset = frozenset()):
@@ -191,15 +191,15 @@ async def grant_loser_rank_roles(member: discord.Member, extra_role_ids: frozens
     if known_role_ids & roles:
         return [], set()
 
-    contender_role = settings.ROLE_CONTENDER
-    if contender_role in known_role_ids:
+    challenger_role = settings.ROLE_CHALLENGER
+    if challenger_role in known_role_ids:
         return [], set()
 
-    contender_obj = member.guild.get_role(contender_role)
-    if contender_obj is None:
+    challenger_obj = member.guild.get_role(challenger_role)
+    if challenger_obj is None:
         return [f":warning:  Couldn't find the Challenger role in this server (check the role ID) — skipping role assignment for {member.name}."], set()
-    await member.add_roles(contender_obj)
-    return [f"{member.name} earned the Challenger role!"], {contender_obj.id}
+    await member.add_roles(challenger_obj)
+    return [f"{member.name} earned the Challenger role!"], {challenger_obj.id}
 
 
 def create_embed(description):
