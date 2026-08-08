@@ -2,6 +2,7 @@ import datetime
 import os
 import re
 import sqlite3
+from io import BytesIO
 from typing import Dict, Any, List, Optional
 
 import aiohttp
@@ -20,14 +21,40 @@ from cogs.elo_system import (
     set_highest_elo,
     update_historical_rankings,
     get_multiplier,
+    grant_winner_rank_roles,
+    grant_loser_rank_roles,
 )
 
 # Load environment variables
 load_dotenv()
 
 CHALLONGE_API_KEY = os.getenv('CHALLONGE_API_TOKEN')
+# Permalink/subdomain of the community tournaments should be created under
+# (e.g. "doomsumo" for challonge.com/communities/doomsumo). Leave unset to
+# create tournaments under the personal account instead.
+CHALLONGE_COMMUNITY = os.getenv('CHALLONGE_COMMUNITY') or None
 DB_NAME = 'elo_data.db'
-CHALLONGE_BASE_URL = "https://api.challonge.com/v1"
+CHALLONGE_BASE_URL = "https://api.challonge.com/v2.1"
+CHALLONGE_HEADERS = {
+    "Content-Type": "application/vnd.api+json",
+    "Accept": "application/json",
+    "Authorization-Type": "v1",
+    "Authorization": CHALLONGE_API_KEY or "",
+}
+
+
+def _unwrap(resource: Dict[str, Any]) -> Dict[str, Any]:
+    """Flattens a JSON:API resource object ({id, type, attributes}) into a plain dict."""
+    if not isinstance(resource, dict):
+        return {}
+    flat = dict(resource.get("attributes", {}))
+    flat["id"] = resource.get("id")
+    return flat
+
+
+def _unwrap_list(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Flattens a JSON:API list response ({data: [...]}) into a list of plain dicts."""
+    return [_unwrap(item) for item in payload.get("data", [])]
 
 
 class ChallongeCommands(commands.Cog):
@@ -45,29 +72,37 @@ class ChallongeCommands(commands.Cog):
         timestamp = int(datetime.datetime.now().timestamp())
         return f"{clean}_{timestamp}"
 
-    async def challonge_request(self, method, endpoint, data=None):
-        """Helper function for sending Challonge API requests"""
+    async def challonge_request(self, method, endpoint, json_body=None, params=None):
+        """Helper function for sending Challonge API (v2.1, JSON:API) requests"""
         url = f"{CHALLONGE_BASE_URL}/{endpoint}"
-        params = {'api_key': CHALLONGE_API_KEY}
-
-        if data:
-            params.update(data)
 
         async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, params=params, data=data) as response:
-                if response.status != 200:
+            async with session.request(method, url, headers=CHALLONGE_HEADERS, params=params, json=json_body) as response:
+                if response.status // 100 != 2:
                     error_text = await response.text()
                     raise Exception(f"Challonge API Error ({response.status}): {error_text}")
+                if response.status == 204 or not await response.text():
+                    return {}
                 return await response.json()
+
+    def _community_params(self) -> Optional[Dict[str, str]]:
+        """Query params to scope a tournament-level request to CHALLONGE_COMMUNITY, if configured."""
+        return {"community_id": CHALLONGE_COMMUNITY} if CHALLONGE_COMMUNITY else None
 
     # --- Challonge helpers
     async def get_participants(self, tournament_id: str) -> List[Dict[str, Any]]:
-        """Returns the participant wrappers as provided by the Challonge v1 API (array of {participant:{...}})."""
-        return await self.challonge_request("GET", f"tournaments/{tournament_id}/participants.json")
+        """Returns flattened participant dicts (attributes + id) for a tournament."""
+        resp = await self.challonge_request(
+            "GET", f"tournaments/{tournament_id}/participants.json", params=self._community_params()
+        )
+        return _unwrap_list(resp)
 
     async def get_matches(self, tournament_id: str) -> List[Dict[str, Any]]:
-        """Returns the match wrappers as provided by the Challonge v1 API (array of {match:{...}})."""
-        return await self.challonge_request("GET", f"tournaments/{tournament_id}/matches.json")
+        """Returns flattened match dicts (attributes + id) for a tournament."""
+        resp = await self.challonge_request(
+            "GET", f"tournaments/{tournament_id}/matches.json", params=self._community_params()
+        )
+        return _unwrap_list(resp)
 
     def _ensure_processed_table(self):
         """Ensures the table for preventing duplicate match processing exists."""
@@ -148,30 +183,46 @@ class ChallongeCommands(commands.Cog):
         url_slug = self.clean_url_string(tournament_name)
 
         try:
-            # 2. Create the tournament on Challonge
-            create_payload = {
-                "tournament[name]": tournament_name,
-                "tournament[url]": url_slug,
-                "tournament[tournament_type]": "double elimination",
+            # 2. Create the tournament on Challonge (under CHALLONGE_COMMUNITY if configured)
+            create_body = {
+                "data": {
+                    "type": "tournament",
+                    "attributes": {
+                        "name": tournament_name,
+                        "url": url_slug,
+                        "tournament_type": "double elimination",
+                    },
+                }
             }
 
-            tournament_resp = await self.challonge_request("POST", "tournaments.json", create_payload)
-            tournament_obj = tournament_resp.get('tournament', {})
+            tournament_resp = await self.challonge_request(
+                "POST", "tournaments.json", json_body=create_body, params=self._community_params()
+            )
+            tournament_obj = _unwrap(tournament_resp.get('data', {}))
             challonge_id = tournament_obj.get('id')
-            full_challonge_url = tournament_obj.get('full_challonge_url')
+            # full_challonge_url isn't confirmed in the v2.1 response - fall back to building it.
+            full_challonge_url = tournament_obj.get('full_challonge_url') or (
+                f"https://challonge.com/{CHALLONGE_COMMUNITY}-{url_slug}" if CHALLONGE_COMMUNITY
+                else f"https://challonge.com/{url_slug}"
+            )
 
-            # 3. Add participants (Bulk Add)
-            # Challonge v1 expects keys like participants[][name]
+            # 3. Add participants (one request per participant)
             for name, user_id in participants:
-                form = {
-                    "participant[name]": name,
-                    "participant[misc]": str(user_id)
+                participant_body = {
+                    "data": {
+                        "type": "participant",
+                        "attributes": {
+                            "name": name,
+                            "misc": str(user_id),
+                        },
+                    }
                 }
 
                 await self.challonge_request(
                     "POST",
                     f"tournaments/{challonge_id}/participants.json",
-                    data=form,
+                    json_body=participant_body,
+                    params=self._community_params(),
                 )
 
             # 4. Send success embed
@@ -217,16 +268,15 @@ class ChallongeCommands(commands.Cog):
 
         try:
             # 2. Find the tournament on Challonge by its name
-            index_resp = await self.challonge_request("GET", "tournaments.json", {"state": "all"})
+            index_resp = await self.challonge_request("GET", "tournaments.json", params=self._community_params())
 
             target_id = None
             found_url = None
 
-            for item in index_resp:
-                t = item['tournament']
-                if t['name'] == tournament_name:
-                    target_id = t['id']
-                    found_url = t['full_challonge_url']
+            for t in _unwrap_list(index_resp):
+                if t.get('name') == tournament_name:
+                    target_id = t.get('id')
+                    found_url = t.get('full_challonge_url') or f"https://challonge.com/{t.get('url')}"
                     break
 
             if not target_id:
@@ -234,8 +284,10 @@ class ChallongeCommands(commands.Cog):
                     f"⚠️ Could not find a tournament with the name **{tournament_name}** on Challonge.")
                 return
 
-            # 3. Delete the tournament
-            await self.challonge_request("DELETE", f"tournaments/{target_id}.json")
+            # 3. Delete the tournament (community_id required again if it belongs to one)
+            await self.challonge_request(
+                "DELETE", f"tournaments/{target_id}.json", params=self._community_params()
+            )
 
             await interaction.followup.send(
                 f"✅ Tournament **{tournament_name}** ({found_url}) has been deleted from Challonge.")
@@ -271,8 +323,8 @@ class ChallongeCommands(commands.Cog):
         self._ensure_processed_table()
 
         try:
-            participants_wrapped = await self.get_participants(tournament_id)
-            matches_wrapped = await self.get_matches(tournament_id)
+            participants = await self.get_participants(tournament_id)
+            matches = await self.get_matches(tournament_id)
         except Exception as e:
             await interaction.followup.send(f"⚠️ Error loading Challonge data: {e}")
             return
@@ -280,17 +332,17 @@ class ChallongeCommands(commands.Cog):
         # Mapping: Challonge participant ID -> Discord user ID (from participant.misc)
         p_to_discord: Dict[int, int] = {}
         p_to_name: Dict[int, str] = {}
-        for pw in participants_wrapped:
-            p = pw.get('participant', {})
+        for p in participants:
             pid = p.get('id')
             if pid is None:
                 continue
+            pid = int(pid)  # JSON:API ids come back as strings; keep this in sync with match participant_ids (ints)
             p_to_name[pid] = p.get('name') or str(pid)
             misc = p.get('misc')
             # misc should contain our Discord user ID (int)
             try:
                 if misc is not None and str(misc).strip() != "":
-                    p_to_discord[int(pid)] = int(str(misc))
+                    p_to_discord[pid] = int(str(misc))
             except Exception:
                 # Ignore malformed misc values
                 pass
@@ -301,21 +353,32 @@ class ChallongeCommands(commands.Cog):
         skipped_already = 0
         newly_registered = 0
         processed_lines: List[str] = []  # Collect pretty lines to show in an embed at the end
+        role_grant_lines: List[str] = []  # Collect role-earned/warning lines, shown after the match list
+        # Roles granted to a given Discord user earlier in this same import run - add_roles() doesn't
+        # update discord.py's local member cache, so without this a player winning/losing several
+        # matches in one import would get the same "earned X role" message repeated per match.
+        granted_role_ids_by_user: Dict[int, set] = {}
 
-        for mw in matches_wrapped:
-            m = mw.get('match', {})
+        # Confirmed against a real v2.1 tournament: matches have no player1_id/player2_id
+        # or scores_csv (those are v1 fields). Instead there's `points_by_participant`
+        # (an array of {participant_id, scores}) and an explicit `tie` flag for draws.
+        for m in matches:
             match_id = m.get('id')
-            player1_id = m.get('player1_id')
-            player2_id = m.get('player2_id')
-            winner_id = m.get('winner_id')
-            scores_csv = m.get('scores_csv')
-            completed_at = m.get('completed_at')  # ISO string or None
             state = m.get('state')
+            winner_id = m.get('winner_id')
+            tie = bool(m.get('tie'))
+            completed_at = (m.get('timestamps') or {}).get('updated_at')  # no dedicated completed_at field in v2.1
+            points = m.get('points_by_participant') or []
 
-            # Only completed matches with both players
-            if not match_id or not player1_id or not player2_id:
+            # Only 1v1 matches with both participants recorded
+            if not match_id or len(points) != 2:
                 continue
-            if not (state == 'complete' or (scores_csv and str(scores_csv).strip() != "") or winner_id):
+            player1_id = points[0].get('participant_id')
+            player2_id = points[1].get('participant_id')
+            if player1_id is None or player2_id is None:
+                continue
+
+            if state != 'complete' or tie or not winner_id:
                 skipped_unfinished += 1
                 continue
 
@@ -331,43 +394,12 @@ class ChallongeCommands(commands.Cog):
                 continue
 
             # Determine winner/loser
-            w_disc: Optional[int] = None
-            l_disc: Optional[int] = None
-            w_pid: Optional[int] = None
-            l_pid: Optional[int] = None
-            if winner_id:
-                if int(winner_id) == int(player1_id):
-                    w_disc, l_disc = d1, d2
-                    w_pid, l_pid = int(player1_id), int(player2_id)
-                else:
-                    w_disc, l_disc = d2, d1
-                    w_pid, l_pid = int(player2_id), int(player1_id)
+            if int(winner_id) == int(player1_id):
+                w_disc, l_disc = d1, d2
+                w_pid, l_pid = int(player1_id), int(player2_id)
             else:
-                # Fallback via total scores_csv
-                try:
-                    total1 = 0
-                    total2 = 0
-                    if scores_csv:
-                        for set_str in str(scores_csv).split(","):
-                            set_str = set_str.strip()
-                            if not set_str:
-                                continue
-                            a, b = set_str.split("-")
-                            total1 += int(a)
-                            total2 += int(b)
-                    if total1 == total2:
-                        # Draw? Skip
-                        skipped_unfinished += 1
-                        continue
-                    if total1 > total2:
-                        w_disc, l_disc = d1, d2
-                        w_pid, l_pid = int(player1_id), int(player2_id)
-                    else:
-                        w_disc, l_disc = d2, d1
-                        w_pid, l_pid = int(player2_id), int(player1_id)
-                except Exception:
-                    skipped_unfinished += 1
-                    continue
+                w_disc, l_disc = d2, d1
+                w_pid, l_pid = int(player2_id), int(player1_id)
 
             # Register if needed (equivalent to /register)
             g1 = get_elo(w_disc)
@@ -417,10 +449,27 @@ class ChallongeCommands(commands.Cog):
             self._mark_match_processed(int(match_id), str(tournament_id))
             processed += 1
 
+            # Grant rank roles based on standing, same logic as /report (Challenger/Baller for the
+            # winner, Challenger for the loser) - only possible for players still in the server.
+            w_member = interaction.guild.get_member(w_disc) if interaction.guild else None
+            l_member = interaction.guild.get_member(l_disc) if interaction.guild else None
+            if w_member is not None:
+                msgs, granted = await grant_winner_rank_roles(
+                    w_member, extra_role_ids=frozenset(granted_role_ids_by_user.get(w_disc, ()))
+                )
+                if granted:
+                    granted_role_ids_by_user.setdefault(w_disc, set()).update(granted)
+                role_grant_lines.extend(msgs)
+            if l_member is not None:
+                msgs, granted = await grant_loser_rank_roles(
+                    l_member, extra_role_ids=frozenset(granted_role_ids_by_user.get(l_disc, ()))
+                )
+                if granted:
+                    granted_role_ids_by_user.setdefault(l_disc, set()).update(granted)
+                role_grant_lines.extend(msgs)
+
             # Build a display line: "Winner - Loser: +X / -Y (old_w->new_w | old_l->new_l)"
             try:
-                w_member = interaction.guild.get_member(w_disc) if interaction.guild else None
-                l_member = interaction.guild.get_member(l_disc) if interaction.guild else None
                 w_name = (
                     w_member.display_name if w_member else (
                         p_to_name.get(w_pid, str(w_disc)) if w_pid is not None else str(w_disc)
@@ -463,32 +512,45 @@ class ChallongeCommands(commands.Cog):
             color=discord.Color.blue(),
         )
 
-        # If we have match details, add them as fields, chunked to respect Discord limits
+        # Discord embeds cap out at 6000 total characters (title+description+fields) and
+        # 25 fields, both easy to exceed on a big tournament. Show short lists inline
+        # (matches first, then roles); anything larger goes into one attached text file.
+        match_text = "\n".join(processed_lines)
+        role_text = "\n".join(role_grant_lines)
+        file_sections: List[str] = []
+
         if processed_lines:
-            # Helper to chunk lines into field-sized strings (~1000 chars safety margin)
-            chunks: List[str] = []
-            current = ""
-            for line in processed_lines:
-                # +1 for newline if current not empty
-                extra = ("\n" if current else "") + line
-                if len(current) + len(extra) > 1000:
-                    if current:
-                        chunks.append(current)
-                    current = line
-                else:
-                    current += extra if current else line
-            if current:
-                chunks.append(current)
+            if len(match_text) <= 1000 and len(processed_lines) <= 20:
+                embed.add_field(name="Processed Matches", value=match_text, inline=False)
+            else:
+                embed.add_field(
+                    name="Processed Matches",
+                    value=f"{len(processed_lines)} matches processed - see attached file.",
+                    inline=False,
+                )
+                file_sections.append(f"=== Processed Matches ===\n{match_text}")
 
-            for idx, chunk in enumerate(chunks, start=1):
-                name = "Processed Matches" if len(chunks) == 1 else f"Processed Matches (part {idx}/{len(chunks)})"
-                embed.add_field(name=name, value=chunk, inline=False)
+        if role_grant_lines:
+            if len(role_text) <= 1000 and len(role_grant_lines) <= 20:
+                embed.add_field(name="Roles Granted", value=role_text, inline=False)
+            else:
+                embed.add_field(
+                    name="Roles Granted",
+                    value=f"{len(role_grant_lines)} role update(s) - see attached file.",
+                    inline=False,
+                )
+                file_sections.append(f"=== Roles Granted ===\n{role_text}")
 
-            if len(chunks) > 4:
-                # Very long outputs are possible on big events; hint at truncation even though we chunk conservatively
-                embed.set_footer(text="List truncated for length. Consider importing in smaller batches if needed.")
+        file_to_send: Optional[discord.File] = None
+        if file_sections:
+            file_to_send = discord.File(
+                BytesIO("\n\n".join(file_sections).encode("utf-8")), filename="import_results.txt"
+            )
 
-        await interaction.followup.send(embed=embed)
+        if file_to_send:
+            await interaction.followup.send(embed=embed, file=file_to_send)
+        else:
+            await interaction.followup.send(embed=embed)
 
 
     @app_commands.command(
@@ -522,10 +584,7 @@ class ChallongeCommands(commands.Cog):
 
         try:
             # Load all participants for the tournament
-            participants_wrapped = await self.get_participants(tournament_id)
-
-            # Flatten to a list of raw participant dicts
-            plist = [pw.get("participant", {}) for pw in participants_wrapped]
+            plist = await self.get_participants(tournament_id)
 
             # Primary lookup: misc stores Discord user ID
             target = None
@@ -558,21 +617,27 @@ class ChallongeCommands(commands.Cog):
                 await interaction.followup.send("❌ Found a participant without a valid ID; cannot update.")
                 return
 
-            # Perform the update using Challonge v1 API
+            # Perform the update using Challonge v2.1 API
             # Safely resolve a display name for the new user
             new_disp = getattr(new_player, 'display_name', None) or getattr(new_player, 'global_name', None) or new_player.name
-            form = {
-                "participant[name]": new_disp,
-                "participant[misc]": str(new_player.id),
+            update_body = {
+                "data": {
+                    "type": "participant",
+                    "attributes": {
+                        "name": new_disp,
+                        "misc": str(new_player.id),
+                    },
+                }
             }
 
             updated = await self.challonge_request(
                 "PUT",
                 f"tournaments/{tournament_id}/participants/{int(target_id)}.json",
-                data=form,
+                json_body=update_body,
+                params=self._community_params(),
             )
 
-            updated_p = updated.get("participant", {}) if isinstance(updated, dict) else {}
+            updated_p = _unwrap(updated.get("data", {})) if isinstance(updated, dict) else {}
             new_name = updated_p.get("name", new_disp)
             new_misc = updated_p.get("misc", str(new_player.id))
 

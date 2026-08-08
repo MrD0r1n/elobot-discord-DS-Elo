@@ -1,0 +1,24 @@
+# Environment / secrets
+.env
+
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.swp
+*.swo
+*.swn
+
+# Database
+*.db
+
+# Backups
+backups/
+
+# Logs
+logs/
+
+# Claude Code
+.claude/

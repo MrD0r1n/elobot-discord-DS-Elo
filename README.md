@@ -1,23 +1,43 @@
-## INFO ##
-An Elo Leaderboard Discord Bot for 1v1 games.
+# Elo Bot
 
-## PROJECT STATUS ##
-This bot is written for the Doom Sumo Workshop discord server (https://discord.gg/3VmmEmxy6W).
-You have to tweak some things yourself to make the bot work, find instructions below.
+An Elo leaderboard Discord bot for 1v1 games.
 
-## INSTRUCTIONS ##
-When you invite your discord bot with the OAuth2 URL Generator; Enable Scopes 'bot' and 'applications.commands'.
-Bot permissions: View Channels, Manage Roles, Send messages, Add Reactions, Read Message History, Use Application Commands (probably doesn't need some of the last ones).
+## Project Status
 
--Start with changing the 'perm' variable to a role ID from you server (for correct permissions). Change in top of file for elo_system.py and tournament_signup.py
+This bot is written for the [Doom Sumo Workshop Discord server](https://discord.gg/3VmmEmxy6W).
+You'll need to tweak a few things to make it work on your own server - instructions below.
 
--Optional: activate venv. 'python -m venv venv'
+## Setup
 
--Download the required pip packages (pip install -r requirements.txt) and make sure to create '.env' file in the main project folder. The env file should specify;
+1. **Invite the bot** using the OAuth2 URL Generator, with:
+   - Scopes: `bot`, `applications.commands`
+   - Bot permissions: `View Channels`, `Manage Roles`, `Send Messages`, `Add Reactions`, `Read Message History`, `Use Application Commands` (some of these may not be strictly required)
 
-DISCORD_API_TOKEN = "your-token"
+2. **(Optional) Create a virtual environment:**
 
-GUILD = "your-guild-id"
-CHALLONGE_API_TOKEN "your-challongev1-token" (needed, if you want to use challonge functions)
+   ```bash
+   python -m venv venv
+   ```
 
--To start: 'python main.py'
+3. **Install the required packages:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Create a `.env` file** in the project root with:
+
+   ```env
+   DISCORD_API_TOKEN="your-token"
+   GUILD="your-guild-id"
+   CHALLONGE_API_TOKEN="your-challonge-v1-token"   # only needed for the Challonge integration
+   CHALLONGE_COMMUNITY="your-community-permalink"  # optional, e.g. "doomsumo" - creates tournaments under a Challonge community instead of your personal account
+   ```
+
+5. **Configure role IDs.** All Discord role IDs the bot checks against (staff permissions, ELO rank roles) live in `settings.py`. Each one can be overridden per-environment via `.env` or by editing the code. See the `ROLE_*` variables in `settings.py` for the full list and their `.env` override names (e.g. `ROLE_ADMIN`, `ROLE_TEST_PERM`).
+
+6. **Start the bot:**
+
+   ```bash
+   python main.py
+   ```
