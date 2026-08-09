@@ -12,6 +12,13 @@ logger = settings.logging.getLogger("bot")
 class LeaderboardView(discord.ui.View):
     """Leaderboard view."""
 
+    # How far back we look to isolate "the most recent tournament" for the rank-movement
+    # comparison - matches within this window of each other are treated as one event.
+    TOURNAMENT_ISOLATION_DAYS = 5
+    # Furthest back the comparison is ever allowed to reach, and how long a movement arrow
+    # keeps showing after a player's last match before it's hidden entirely.
+    MAX_MOVEMENT_LOOKBACK_DAYS = 30
+
     def __init__(self, interaction:discord.Interaction, filter_mode: str="months", filter_data: int=0):
         super().__init__(timeout=None)
         self.bot = interaction.client
@@ -113,12 +120,33 @@ class LeaderboardView(discord.ui.View):
         c.execute(f"SELECT player_id, elo FROM elo_data WHERE player_id IN ({placeholders}) AND inactive = 0", tuple(relevant_players))
         current_elo_map = {pid: elo for pid, elo in c.fetchall()}
 
-        # prepare time window
+        # Comparison anchor: normally "TOURNAMENT_ISOLATION_DAYS ago", so we compare against
+        # standings right before the most recent tournament. But if nobody has played at all
+        # in that window, freeze the anchor at "TOURNAMENT_ISOLATION_DAYS before the last
+        # match anyone played" instead - the SAME point in time for every player - so movement
+        # keeps showing consistently during a quiet stretch rather than each player silently
+        # drifting to "no movement" at a different moment. Never looks back further than
+        # MAX_MOVEMENT_LOOKBACK_DAYS in total.
         now = datetime.datetime.utcnow()
-        five_days_before = (now - datetime.timedelta(days=5)).strftime('%Y-%m-%d %H:%M:%S')
         now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+        tight_cutoff_dt = now - datetime.timedelta(days=self.TOURNAMENT_ISOLATION_DAYS)
+        max_lookback_dt = now - datetime.timedelta(days=self.MAX_MOVEMENT_LOOKBACK_DAYS)
 
-        # all matches for relevant players in the last 5 days (winner/loser unified)
+        c.execute("SELECT MAX(date) FROM match_data")
+        last_match_overall = c.fetchone()[0]
+
+        if last_match_overall and last_match_overall >= tight_cutoff_dt.strftime('%Y-%m-%d %H:%M:%S'):
+            comparison_cutoff_dt = tight_cutoff_dt
+        elif last_match_overall:
+            anchor_dt = datetime.datetime.strptime(last_match_overall, '%Y-%m-%d %H:%M:%S') \
+                - datetime.timedelta(days=self.TOURNAMENT_ISOLATION_DAYS)
+            comparison_cutoff_dt = max(anchor_dt, max_lookback_dt)
+        else:
+            comparison_cutoff_dt = tight_cutoff_dt  # no matches at all, ever
+
+        comparison_cutoff = comparison_cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        # all matches for relevant players since the comparison cutoff (winner/loser unified)
         # We select: player_id, date, elo_after_match
         match_union_sql = f"""
             SELECT winner_id AS player_id, date, elo_winner AS elo_after
@@ -129,7 +157,7 @@ class LeaderboardView(discord.ui.View):
             FROM match_data
             WHERE date >= ? AND loser_id  IN ({placeholders})
         """
-        params = [five_days_before, *relevant_players, five_days_before, *relevant_players]
+        params = [comparison_cutoff, *relevant_players, comparison_cutoff, *relevant_players]
         c.execute(match_union_sql, tuple(params))
         rows = c.fetchall()
 
@@ -138,23 +166,23 @@ class LeaderboardView(discord.ui.View):
         for pid, d, elo_after in rows:
             per_player[pid].append((d, elo_after))
 
-        # sort per player by date ASC to find "first after 5 days ago"
+        # sort per player by date ASC to find "first after the cutoff"
         for pid in per_player:
             per_player[pid].sort(key=lambda x: x[0])
 
-        # apply 3-step logic to determine "elo_5_days_ago"
-        elo_5_days_ago_map = {}
+        # apply 3-step logic to determine each player's baseline ELO for comparison
+        baseline_elo_map = {}
         for pid in relevant_players:
             entries = per_player.get(pid, [])
 
-            # Step 1: first match AFTER 5 days ago (date > five_days_before) -> with our filter it's >=; we emulate ">" by skipping == if desired
+            # Step 1: first match after the cutoff (date > comparison_cutoff) -> with our filter it's >=; we emulate ">" by skipping == if desired
             first_after = None
             for d, e in entries:
-                if d > five_days_before:
+                if d > comparison_cutoff:
                     first_after = e
                     break
 
-            # Step 2: if none, oldest match WITHIN last 5 days (same window; already sorted asc)
+            # Step 2: if none, oldest match within the window (same window; already sorted asc)
             oldest_within = entries[0][1] if entries else None
 
             # Choose according to logic; if step1 failed, use step2
@@ -165,12 +193,12 @@ class LeaderboardView(discord.ui.View):
                 candidate = current_elo_map.get(pid)
 
             if candidate is not None:
-                elo_5_days_ago_map[pid] = candidate
+                baseline_elo_map[pid] = candidate
 
         # old rankings (desc by elo)
         self._old_rankings = {
             pid: rank + 1
-            for rank, (pid, _) in enumerate(sorted(elo_5_days_ago_map.items(), key=lambda x: x[1], reverse=True))
+            for rank, (pid, _) in enumerate(sorted(baseline_elo_map.items(), key=lambda x: x[1], reverse=True))
         }
 
         # winning streaks: need recent matches ordered by date DESC for all relevant players
@@ -278,7 +306,7 @@ class LeaderboardView(discord.ui.View):
     #begin code 3
 
     def get_movement_emoji(self, player_id, current_rank):
-        # Only show movement if last played match was >= 30 days ago
+        # Hide movement once a player's last match is older than MAX_MOVEMENT_LOOKBACK_DAYS
         last_str = getattr(self, "_last_match_date", {}).get(player_id)
         if not last_str:
             return ""  # no matches known → show nothing
@@ -289,8 +317,8 @@ class LeaderboardView(discord.ui.View):
         except ValueError:
             last_dt = datetime.datetime.fromisoformat(last_str)
 
-        if (datetime.datetime.utcnow() - last_dt).days > 30:
-            return ""  # too recent → no emoji
+        if (datetime.datetime.utcnow() - last_dt).days > self.MAX_MOVEMENT_LOOKBACK_DAYS:
+            return ""  # too old → no emoji
 
         # existing rank movement + streak logic
         old_rank = self._old_rankings.get(player_id)
