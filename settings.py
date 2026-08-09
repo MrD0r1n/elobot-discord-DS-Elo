@@ -54,7 +54,7 @@ RANK_ROLES = {ROLE_BALLER, ROLE_APPRENTICE, ROLE_NOBLE, ROLE_HEROIC, ROLE_EMPERO
 # --- Roles: tournament participation -----------------------------------
 # NOT a rank role - just marks "signed up for the current tournament", used to
 # gate access to tournament-only channels etc.
-ROLE_TOURNAMENT_CONTENDER = _role_id("ROLE_TOURNAMENT_CONTENDER", 1146447351217672323)
+ROLE_TOURNAMENT_CONTENDER = _role_id("ROLE_TOURNAMENT_CONTENDER", 1176099066363527208)
 
 LOGGING_CONFIG = {
     "version": 1,
