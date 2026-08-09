@@ -135,8 +135,11 @@ class LeaderboardView(discord.ui.View):
         if last_match_overall and last_match_overall >= tight_cutoff_dt.strftime('%Y-%m-%d %H:%M:%S'):
             comparison_cutoff_dt = tight_cutoff_dt
         elif last_match_overall:
-            anchor_dt = datetime.datetime.strptime(last_match_overall, '%Y-%m-%d %H:%M:%S') \
-                - datetime.timedelta(days=self.TOURNAMENT_ISOLATION_DAYS)
+            try:
+                last_match_dt = datetime.datetime.strptime(last_match_overall, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                last_match_dt = datetime.datetime.fromisoformat(last_match_overall)
+            anchor_dt = last_match_dt - datetime.timedelta(days=self.TOURNAMENT_ISOLATION_DAYS)
             comparison_cutoff_dt = max(anchor_dt, max_lookback_dt)
         else:
             comparison_cutoff_dt = tight_cutoff_dt  # no matches at all, ever
@@ -274,9 +277,9 @@ class LeaderboardView(discord.ui.View):
             return data
 
         except sqlite3.Error as e:
-            logger.error(f"Database error: {e}")
+            logger.error(f"Database error: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error: {e}", exc_info=True)
 
         return data
 
