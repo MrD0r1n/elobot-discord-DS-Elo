@@ -11,7 +11,7 @@ You'll need to tweak a few things to make it work on your own server - instructi
 
 1. **Invite the bot** using the OAuth2 URL Generator, with:
    - Scopes: `bot`, `applications.commands`
-   - Bot permissions: `View Channels`, `Manage Roles`, `Send Messages`, `Add Reactions`, `Read Message History`, `Use Application Commands` (some of these may not be strictly required)
+   - Bot permissions: `View Channels`, `Manage Roles`, `Send Messages`, `Add Reactions`, `Read Message History`
 
 2. **(Optional) Create a virtual environment:**
 
