@@ -115,10 +115,7 @@ class LeaderboardView(discord.ui.View):
 
         self._last_match_date = {pid: d for pid, d in c.fetchall()}
 
-        # current ELO for relevant players
         placeholders = ",".join(["?"] * len(relevant_players))
-        c.execute(f"SELECT player_id, elo FROM elo_data WHERE player_id IN ({placeholders}) AND inactive = 0", tuple(relevant_players))
-        current_elo_map = {pid: elo for pid, elo in c.fetchall()}
 
         # Comparison anchor: normally "TOURNAMENT_ISOLATION_DAYS ago", so we compare against
         # standings right before the most recent tournament. But if nobody has played at all
@@ -146,54 +143,36 @@ class LeaderboardView(discord.ui.View):
 
         comparison_cutoff = comparison_cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-        # all matches for relevant players since the comparison cutoff (winner/loser unified)
-        # We select: player_id, date, elo_after_match
-        match_union_sql = f"""
+        # Baseline ELO per player: their standing right BEFORE the comparison window started,
+        # i.e. the result of their most recent match strictly before comparison_cutoff. This
+        # captures the full effect of everything that happened since (including a single
+        # match) - using "elo right after their first in-window match" instead would make a
+        # player with exactly one recent match compare against themselves and always show no
+        # movement, which was the actual bug. Falls back to the fixed starting ELO (1200) for
+        # players with no match before the window (e.g. their very first-ever match happens to
+        # fall inside it).
+        pre_window_sql = f"""
             SELECT winner_id AS player_id, date, elo_winner AS elo_after
             FROM match_data
-            WHERE date >= ? AND winner_id IN ({placeholders})
+            WHERE date < ? AND winner_id IN ({placeholders})
             UNION ALL
             SELECT loser_id  AS player_id, date, elo_loser  AS elo_after
             FROM match_data
-            WHERE date >= ? AND loser_id  IN ({placeholders})
+            WHERE date < ? AND loser_id  IN ({placeholders})
         """
         params = [comparison_cutoff, *relevant_players, comparison_cutoff, *relevant_players]
-        c.execute(match_union_sql, tuple(params))
-        rows = c.fetchall()
+        c.execute(pre_window_sql, tuple(params))
 
-        # group by player -> list of (date, elo_after)
-        per_player = defaultdict(list)
-        for pid, d, elo_after in rows:
-            per_player[pid].append((d, elo_after))
+        pre_window_elo = {}
+        for pid, d, elo_after in c.fetchall():
+            if pid not in pre_window_elo or d > pre_window_elo[pid][0]:
+                pre_window_elo[pid] = (d, elo_after)
 
-        # sort per player by date ASC to find "first after the cutoff"
-        for pid in per_player:
-            per_player[pid].sort(key=lambda x: x[0])
-
-        # apply 3-step logic to determine each player's baseline ELO for comparison
-        baseline_elo_map = {}
-        for pid in relevant_players:
-            entries = per_player.get(pid, [])
-
-            # Step 1: first match after the cutoff (date > comparison_cutoff) -> with our filter it's >=; we emulate ">" by skipping == if desired
-            first_after = None
-            for d, e in entries:
-                if d > comparison_cutoff:
-                    first_after = e
-                    break
-
-            # Step 2: if none, oldest match within the window (same window; already sorted asc)
-            oldest_within = entries[0][1] if entries else None
-
-            # Choose according to logic; if step1 failed, use step2
-            candidate = first_after if first_after is not None else oldest_within
-
-            # Step 3: if still none, fallback to current ELO
-            if candidate is None:
-                candidate = current_elo_map.get(pid)
-
-            if candidate is not None:
-                baseline_elo_map[pid] = candidate
+        STARTING_ELO = 1200
+        baseline_elo_map = {
+            pid: (pre_window_elo[pid][1] if pid in pre_window_elo else STARTING_ELO)
+            for pid in relevant_players
+        }
 
         # old rankings (desc by elo)
         self._old_rankings = {
